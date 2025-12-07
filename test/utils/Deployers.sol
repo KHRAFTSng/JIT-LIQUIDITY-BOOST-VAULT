@@ -63,7 +63,8 @@ abstract contract Deployers {
         if (permit2Address.code.length > 0) {
             // Permit2 is already deployed, no need to etch it.
         } else {
-            _etch(permit2Address, Permit2Deployer.deploy().code);
+            address tempDeployAddress = address(Permit2Deployer.deploy());
+            vm.etch(permit2Address, tempDeployAddress.code);
         }
 
         permit2 = IPermit2(permit2Address);
@@ -95,10 +96,6 @@ abstract contract Deployers {
         } else {
             swapRouter = IUniswapV4Router04(payable(AddressConstants.getV4SwapRouterAddress(block.chainid)));
         }
-    }
-
-    function _etch(address, bytes memory) internal virtual {
-        revert("Not implemented");
     }
 
     function deployArtifacts() internal {
