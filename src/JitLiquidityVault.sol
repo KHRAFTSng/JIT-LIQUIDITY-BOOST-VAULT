@@ -64,6 +64,16 @@ contract JitLiquidityVault is ERC4626 {
     }
 
     /**
+     * @notice Transfers ownership to a new address
+     * @param newOwner The new owner address
+     */
+    function transferOwnership(address newOwner) external {
+        require(msg.sender == owner, "only owner");
+        require(newOwner != address(0), "invalid owner");
+        owner = newOwner;
+    }
+
+    /**
      * @notice Withdraws tokens from Aave and transfers to owner (used by hook)
      * @param token The token address to withdraw
      * @param amount The amount to withdraw
