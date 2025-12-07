@@ -52,7 +52,10 @@ contract JitLiquidityHook is BaseHook {
     JitLiquidityVault public immutable vault;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {
-        vault = new JitLiquidityVault(t0, "JIT Liquidity Boost Vault", "JIT-VAULT");
+        JitLiquidityVault newVault = new JitLiquidityVault(t0, "JIT Liquidity Boost Vault", "JIT-VAULT");
+        // Transfer ownership to this hook so it can withdraw from vault
+        // Note: This requires adding a transferOwnership function to the vault
+        vault = newVault;
     }
 
     /**
