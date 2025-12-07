@@ -227,6 +227,7 @@ contract JitLiquidityHook is BaseHook {
         if (d0 < 0) {
             uint256 owe0 = uint256(-d0);
             // Withdraw from vault and settle to pool
+            // The vault owner should be set to this hook contract
             vault.withdrawFromAave(Currency.unwrap(key.currency0), owe0);
             key.currency0.settle(poolManager, address(this), owe0, false);
         }
