@@ -134,7 +134,7 @@ contract E2ETestScript is Script {
             
             // WETH/rETH pool fee tier (0.3% = 3000)
             uint24 fee = 3000;
-            uint256 amountIn = 20 ether; // Swap 20 WETH for rETH, keep WETH for deposit/liquidity
+            uint256 amountIn = 50 ether; // Swap more WETH to get enough rETH for both liquidity and swap test
             
             // Encode swap path: WETH -> rETH
             bytes memory path = abi.encodePacked(WETH, fee, RETH);
@@ -193,13 +193,15 @@ contract E2ETestScript is Script {
         int24 tickUpper = TickMath.maxUsableTick(60);
 
         // Adjust amounts based on available tokens - need reasonable amounts for liquidity
+        // Reserve some rETH for swap test later (at least 0.5 rETH)
         uint256 availableRethForPool = reth.balanceOf(broadcaster);
-        uint256 amount0 = availableRethForPool > 1 ether ? 1 ether : availableRethForPool; // Use up to 1 rETH
+        uint256 rethReservedForSwap = 0.5 ether;
+        uint256 amount0 = availableRethForPool > rethReservedForSwap ? availableRethForPool - rethReservedForSwap : 0; // Reserve rETH for swap
         uint256 availableWethForPool = weth.balanceOf(broadcaster);
-        uint256 amount1 = availableWethForPool > 2 ether ? 2 ether : availableWethForPool; // Use up to 2 WETH
+        uint256 amount1 = availableWethForPool > 1 ether ? 1 ether : availableWethForPool; // Use 1 WETH
         
-        // Ensure we have minimum amounts for liquidity
-        require(amount0 > 0 && amount1 > 0, "Insufficient tokens for liquidity");
+        // Ensure we have minimum amounts for liquidity (need at least 0.1 rETH)
+        require(amount0 >= 0.1 ether && amount1 > 0, "Insufficient tokens for liquidity");
 
         uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
             sqrtPrice,
@@ -240,16 +242,37 @@ contract E2ETestScript is Script {
 
         // Step 7: Perform swap to trigger JIT liquidity
         console.log("Step 7: Performing swap to trigger JIT liquidity...");
-        // Use smaller swap amount based on available tokens
+        // Use a meaningful swap amount to trigger JIT liquidity
+        // NOTE: Very small swaps (< 0.5 ETH) may not trigger JIT liquidity because:
+        // 1. The hook caps liquidity to the swap output amount (stepOut)
+        // 2. The tight liquidity band (2 ticks) may not fit very small amounts
+        // 3. The liquidity calculation may round down to 0 for tiny amounts
         uint256 availableRethForSwap = reth.balanceOf(broadcaster);
-        uint256 swapAmount = availableRethForSwap > 0.1 ether ? 0.1 ether : availableRethForSwap;
+        // Use at least 0.5 rETH for swap to trigger meaningful JIT liquidity
+        uint256 swapAmount = availableRethForSwap >= 0.5 ether ? 0.5 ether : availableRethForSwap;
         
         if (swapAmount == 0) {
-            console.log("Skipping swap - no rETH available");
+            console.log("Skipping swap - no rETH available (have:", availableRethForSwap / 1e18, "rETH)");
+            console.log("NOTE: Very small swaps may not trigger JIT liquidity due to tight liquidity bands");
             return;
         }
         
+        if (swapAmount < 0.5 ether) {
+            console.log("WARNING: Swap amount is small (", swapAmount / 1e18, "rETH). JIT liquidity may not be added.");
+        }
+        
+        // Log vault state before swap for debugging
+        uint256 vaultWethBefore = vault.getReserves(WETH);
+        uint256 vaultRethBefore = vault.getReserves(RETH);
+        
         uint256 wethBalanceBefore = weth.balanceOf(broadcaster);
+        uint256 rethBalanceBefore = reth.balanceOf(broadcaster);
+        
+        console.log("Swap details:");
+        console.log("  Available rETH:", availableRethForSwap / 1e18, "rETH");
+        console.log("  Swap amount:", swapAmount / 1e18, "rETH");
+        console.log("  Vault WETH before:", vaultWethBefore / 1e18);
+        console.log("  Vault rETH before:", vaultRethBefore / 1e18);
         
         // Re-approve if needed
         vm.startBroadcast(broadcasterKey);
@@ -267,10 +290,29 @@ contract E2ETestScript is Script {
         vm.stopBroadcast();
 
         uint256 wethAfter = weth.balanceOf(broadcaster);
+        uint256 rethAfter = reth.balanceOf(broadcaster);
         uint256 wethReceived = wethAfter > wethBalanceBefore ? wethAfter - wethBalanceBefore : 0;
+        uint256 rethSwapped = rethBalanceBefore > rethAfter ? rethBalanceBefore - rethAfter : 0;
+        
+        // Check vault state after swap
+        uint256 vaultWethAfter = vault.getReserves(WETH);
+        uint256 vaultRethAfter = vault.getReserves(RETH);
+        
         console.log("Swap completed!");
-        console.log("Swapped rETH:", swapAmount / 1e18);
-        console.log("Received WETH:", wethReceived / 1e18);
+        console.log("  Swapped rETH:", rethSwapped / 1e18);
+        console.log("  Received WETH:", wethReceived / 1e18);
+        
+        int256 wethChange = int256(vaultWethAfter) - int256(vaultWethBefore);
+        int256 rethChange = int256(vaultRethAfter) - int256(vaultRethBefore);
+        
+        console.log("  Vault WETH after:", vaultWethAfter / 1e18);
+        if (wethChange != 0) {
+            console.log("  Vault WETH change:", uint256(wethChange > 0 ? wethChange : -wethChange) / 1e18, wethChange > 0 ? "increase" : "decrease");
+        }
+        console.log("  Vault rETH after:", vaultRethAfter / 1e18);
+        if (rethChange != 0) {
+            console.log("  Vault rETH change:", uint256(rethChange > 0 ? rethChange : -rethChange) / 1e18, rethChange > 0 ? "increase" : "decrease");
+        }
         console.log("");
 
         // Step 8: Check vault state after swap
