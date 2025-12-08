@@ -11,7 +11,7 @@ import {JitLiquidityHook} from "../src/JitLiquidityHook.sol";
 
 /// @notice Mines the address and deploys the JitLiquidityHook contract
 contract DeployHookScript is BaseScript {
-    address constant CREATE2_FACTORY = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
+    address constant CREATE2_FACTORY_ADDR = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
     function run() public {
         // hook contracts must have specific flags encoded in the address
@@ -20,7 +20,7 @@ contract DeployHookScript is BaseScript {
         // Mine a salt that will produce a hook address with the correct flags
         bytes memory constructorArgs = abi.encode(poolManager);
         (address hookAddress, bytes32 salt) =
-            HookMiner.find(CREATE2_FACTORY, flags, type(JitLiquidityHook).creationCode, constructorArgs);
+            HookMiner.find(CREATE2_FACTORY_ADDR, flags, type(JitLiquidityHook).creationCode, constructorArgs);
 
         // Deploy the hook using CREATE2
         vm.startBroadcast();

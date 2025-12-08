@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
+import {Test} from "forge-std/Test.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
@@ -28,7 +29,7 @@ import {V4RouterDeployer} from "hookmate/artifacts/V4Router.sol";
  *
  * This contract can be used for both local testing and fork testing.
  */
-abstract contract Deployers {
+abstract contract Deployers is Test {
     IPermit2 permit2;
     IPoolManager poolManager;
     IPositionManager positionManager;
@@ -96,6 +97,10 @@ abstract contract Deployers {
         } else {
             swapRouter = IUniswapV4Router04(payable(AddressConstants.getV4SwapRouterAddress(block.chainid)));
         }
+    }
+
+    function _etch(address, bytes memory) internal virtual {
+        revert("etch not implemented");
     }
 
     function deployArtifacts() internal {
