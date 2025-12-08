@@ -19,8 +19,6 @@ import {CurrencySettler} from "lib/uniswap-hooks/src/utils/CurrencySettler.sol";
 
 import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 
-import {console} from "forge-std/console.sol";
-
 import {JitLiquidityVault} from "./JitLiquidityVault.sol";
 
 /**
@@ -34,6 +32,7 @@ contract JitLiquidityHook is BaseHook {
     using CurrencyLibrary for Currency;
     using CurrencySettler for Currency;
 
+    uint256 public constant LEVERAGE_BPS = 20000; // allow up to 2x of vault reserves via borrowing
     // Supported token addresses - Mainnet
     // WETH
     address constant t0 = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
@@ -48,6 +47,8 @@ contract JitLiquidityHook is BaseHook {
     int24 transient tickUpper;
     int24 transient tickLower;
     uint128 transient liquidityDelta;
+    uint256 transient borrowed0;
+    uint256 transient borrowed1;
 
     JitLiquidityVault public immutable vault;
 
@@ -123,6 +124,10 @@ contract JitLiquidityHook is BaseHook {
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
+        // reset transient borrow tracking per swap
+        borrowed0 = 0;
+        borrowed1 = 0;
+
         // Validate tokens are supported
         {
             address token0 = Currency.unwrap(key.currency0);
@@ -190,9 +195,9 @@ contract JitLiquidityHook is BaseHook {
             key.fee
         );
         
-        // Get vault reserves for both tokens
-        uint256 cap0 = vault.getReserves(Currency.unwrap(key.currency0));
-        uint256 cap1 = vault.getReserves(Currency.unwrap(key.currency1));
+        // Get vault reserves for both tokens and allow leverage via Aave borrowing
+        uint256 cap0 = (vault.getReserves(Currency.unwrap(key.currency0)) * LEVERAGE_BPS) / 10_000;
+        uint256 cap1 = (vault.getReserves(Currency.unwrap(key.currency1)) * LEVERAGE_BPS) / 10_000;
         
         // Cap based on swap output to avoid over-adding liquidity
         if (params.zeroForOne) {
@@ -229,14 +234,24 @@ contract JitLiquidityHook is BaseHook {
         // Settle negative deltas (amounts owed to the pool)
         if (d0 < 0) {
             uint256 owe0 = uint256(-d0);
-            // Withdraw from vault and settle to pool
-            // The vault owner should be set to this hook contract
+            // Check vault reserves and borrow deficit from Aave if needed
+            uint256 reserves0 = vault.getReserves(Currency.unwrap(key.currency0));
+            if (owe0 > reserves0) {
+                uint256 deficit = owe0 - reserves0;
+                vault.borrowFromAave(Currency.unwrap(key.currency0), deficit);
+                borrowed0 = deficit;
+            }
             vault.withdrawFromAave(Currency.unwrap(key.currency0), owe0);
             key.currency0.settle(poolManager, address(this), owe0, false);
         }
         if (d1 < 0) {
             uint256 owe1 = uint256(-d1);
-            // Withdraw from vault and settle to pool
+            uint256 reserves1 = vault.getReserves(Currency.unwrap(key.currency1));
+            if (owe1 > reserves1) {
+                uint256 deficit = owe1 - reserves1;
+                vault.borrowFromAave(Currency.unwrap(key.currency1), deficit);
+                borrowed1 = deficit;
+            }
             vault.withdrawFromAave(Currency.unwrap(key.currency1), owe1);
             key.currency1.settle(poolManager, address(this), owe1, false);
         }
@@ -280,16 +295,32 @@ contract JitLiquidityHook is BaseHook {
         int256 delta1 = _delta.amount1();
 
         // Take positive deltas (earned amounts) and return to vault
-        if (delta0 > 0) {
-            key.currency0.take(poolManager, address(vault), uint256(delta0), false);
-            vault.supplyToAave(Currency.unwrap(key.currency0));
-        }
-        if (delta1 > 0) {
-            key.currency1.take(poolManager, address(vault), uint256(delta1), false);
-            vault.supplyToAave(Currency.unwrap(key.currency1));
-        }
+        if (delta0 > 0) borrowed0 =
+            _repayAndSupply(key.currency0, uint256(delta0), borrowed0, Currency.unwrap(key.currency0));
+        if (delta1 > 0) borrowed1 =
+            _repayAndSupply(key.currency1, uint256(delta1), borrowed1, Currency.unwrap(key.currency1));
 
         return (BaseHook.afterSwap.selector, 0);
+    }
+
+    function _repayAndSupply(
+        Currency currency,
+        uint256 amount,
+        uint256 borrowed,
+        address token
+    ) internal returns (uint256) {
+        if (borrowed > 0) {
+            uint256 repay = amount < borrowed ? amount : borrowed;
+            currency.take(poolManager, address(vault), repay, false);
+            vault.repayToAave(token, repay);
+            borrowed -= repay;
+            amount -= repay;
+        }
+        if (amount > 0) {
+            currency.take(poolManager, address(vault), amount, false);
+            vault.supplyToAave(token);
+        }
+        return borrowed;
     }
 }
 

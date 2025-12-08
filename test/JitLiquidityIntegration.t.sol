@@ -180,7 +180,7 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
 
         // Perform a swap from rETH to WETH
         uint256 amountIn = 50 ether;
-        BalanceDelta swapDelta = SWAP_ROUTER.swapExactTokensForTokens({
+        SWAP_ROUTER.swapExactTokensForTokens({
             amountIn: amountIn,
             amountOutMin: 0,
             zeroForOne: true,

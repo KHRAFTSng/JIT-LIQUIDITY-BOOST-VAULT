@@ -9,8 +9,6 @@ import {SafeTransferLib} from "solmate/src/utils/SafeTransferLib.sol";
 
 import {IAaveV3Pool} from "./interfaces/IAaveV3Pool.sol";
 
-import {console} from "forge-std/console.sol";
-
 /**
  * @title JitLiquidityVault
  * @notice ERC4626-compatible vault that supplies assets to Aave V3 for yield
@@ -40,6 +38,7 @@ contract JitLiquidityVault is ERC4626 {
     AggregatorV3Interface constant oracleETH_USD = AggregatorV3Interface(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
 
     address public owner;
+    uint256 internal constant BORROW_RATE_MODE = 2; // 2 = variable rate in Aave V3
 
     IAaveV3Pool public immutable POOL_AAVE = IAaveV3Pool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2); // Aave V3 Pool
 
@@ -82,6 +81,37 @@ contract JitLiquidityVault is ERC4626 {
         require(msg.sender == owner, "only owner");
         require(token == t0 || token == t1 || token == t2 || token == t3, "Unknown token");
         POOL_AAVE.withdraw(token, amount, owner);
+    }
+
+    /**
+     * @notice Borrow assets from Aave against the vault collateral (variable rate)
+     * @param token The token to borrow
+     * @param amount The amount to borrow
+     */
+    function borrowFromAave(address token, uint256 amount) external {
+        require(msg.sender == owner, "only owner");
+        require(token == t0 || token == t1 || token == t2 || token == t3, "Unknown token");
+        if (amount == 0) return;
+        POOL_AAVE.borrow(token, amount, BORROW_RATE_MODE, 0, address(this));
+    }
+
+    /**
+     * @notice Repay borrowed assets to Aave (variable rate)
+     * @param token The token to repay
+     * @param amount The amount to repay
+     */
+    function repayToAave(address token, uint256 amount) external {
+        require(msg.sender == owner, "only owner");
+        require(token == t0 || token == t1 || token == t2 || token == t3, "Unknown token");
+        if (amount == 0) return;
+        POOL_AAVE.repay(token, amount, BORROW_RATE_MODE, address(this));
+    }
+
+    /**
+     * @notice Returns the health factor of the vault on Aave
+     */
+    function getHealthFactor() external view returns (uint256 healthFactor) {
+        (,,, , , healthFactor) = POOL_AAVE.getUserAccountData(address(this));
     }
 
     /**
