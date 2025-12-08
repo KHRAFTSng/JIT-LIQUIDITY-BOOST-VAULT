@@ -13,12 +13,10 @@ contract MockAToken is ERC20 {
     }
 
     function mint(address to, uint256 amount) external {
-        require(msg.sender == pool, "only pool");
         _mint(to, amount);
     }
 
     function burn(address from, uint256 amount) external {
-        require(msg.sender == pool, "only pool");
         _burn(from, amount);
     }
 }

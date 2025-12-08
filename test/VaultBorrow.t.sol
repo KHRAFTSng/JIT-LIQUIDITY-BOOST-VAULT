@@ -34,7 +34,10 @@ contract VaultBorrowTest is Test {
         underlying2 = new MockERC20("rETH", "rETH", 18);
         underlying3 = new MockERC20("weETH", "weETH", 18);
 
-        pool = new MockAavePool();
+        MockAavePool poolDeployed = new MockAavePool();
+        vm.etch(AAVE, address(poolDeployed).code);
+        pool = MockAavePool(AAVE);
+
         a0 = new MockAToken(AAVE, "aWETH", "aWETH", 18);
         a1 = new MockAToken(AAVE, "awstETH", "awstETH", 18);
         a2 = new MockAToken(AAVE, "arETH", "arETH", 18);
@@ -50,7 +53,6 @@ contract VaultBorrowTest is Test {
         vm.etch(T1, address(underlying1).code);
         vm.etch(T2, address(underlying2).code);
         vm.etch(T3, address(underlying3).code);
-        vm.etch(AAVE, address(pool).code);
 
         // Approve Aave pool to pull underlying during supplies/repays
         underlying0.approve(AAVE, type(uint256).max);
@@ -64,17 +66,17 @@ contract VaultBorrowTest is Test {
     function testBorrowAndRepay() public {
         // Mint collateral to vault and deposit as aToken via supplyToAave
         MockERC20(T0).mint(address(vault), 10 ether);
-        vm.prank(address(vault));
+        vm.prank(address(this));
         vault.supplyToAave(T0);
 
         // Borrow 5 ETH against collateral
-        vm.prank(address(vault));
+        vm.prank(address(this));
         vault.borrowFromAave(T0, 5 ether);
         assertEq(MockERC20(T0).balanceOf(address(vault)), 5 ether);
 
         // Repay 3 ETH
         MockERC20(T0).approve(address(vault), type(uint256).max);
-        vm.prank(address(vault));
+        vm.prank(address(this));
         vault.repayToAave(T0, 3 ether);
         assertEq(MockERC20(T0).balanceOf(address(vault)), 2 ether);
     }
