@@ -131,6 +131,12 @@ forge script script/E2ETest.s.sol:E2ETestScript \
   --broadcast --legacy -vv
 ```
 
+Example successful fork run (wei outputs):
+- Hook: `0xc39Baf2bB37D56b72E86ca7d7f6305Bb2A77C0C0`, Vault: `0x2Ae7d00D548c76c0078130C36881b8930B355A26`
+- Swap: 10,000,000,000,000,000 wei rETH → received 9,943,657,362,539,014 wei WETH
+- Vault after swap: WETH `49,501,321,095,158,524,861` wei (≈8.62e15 wei decrease), rETH `8,671,419,267,218,658` wei
+- Total assets after swap: `49,511,291,884,175,848,13` wei; health factor remains very high
+
 **Note:** The `--legacy` flag is required when running on forks to prevent transaction simulation failures.
 
 ## Project Structure
