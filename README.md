@@ -151,6 +151,8 @@ Example successful fork run (wei outputs):
 ├── test/
 │   ├── Mocks/
 │   │   ├── ChainlinkFeedMock.sol
+│   │   ├── MockAavePool.sol
+│   │   ├── MockAToken.sol
 │   │   ├── MockRETH.sol
 │   │   ├── MockWeETH.sol
 │   │   └── MockWstETH.sol
@@ -158,7 +160,10 @@ Example successful fork run (wei outputs):
 │   │   ├── Deployers.sol
 │   │   └── libraries/
 │   │       └── EasyPosm.sol
-│   └── JitLiquidityIntegration.t.sol
+│   ├── JitLiquidityIntegration.t.sol
+│   ├── VaultBorrow.t.sol
+│   ├── VaultAccessAndSupply.t.sol
+│   └── VaultRedemptions.t.sol
 ├── script/
 │   ├── base/
 │   │   ├── BaseScript.sol
