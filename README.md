@@ -137,8 +137,4 @@ forge script script/00_DeployHook.s.sol:DeployHookScript --rpc-url <RPC_URL> --b
 
 MIT
 
-## Acknowledgments
 
-- Built for ETHGlobal New York 2025
-- Winner of Uniswap Foundation - v4 Hooks on Unichain 1st place
-- Inspired by Uniswap v4 template and Aave Protocol
