@@ -98,6 +98,27 @@ Deploy the hook to a network:
 forge script script/00_DeployHook.s.sol:DeployHookScript --rpc-url <RPC_URL> --broadcast --verify
 ```
 
+### Running E2E Test on Fork
+
+To run the end-to-end test on an Ethereum mainnet fork:
+
+```bash
+# Start Anvil fork
+source .env
+anvil --fork-url "$ETH_RPC_URL" --code-size-limit 40000
+
+# In another terminal, run the E2E test
+export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+export ETH_FROM=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+forge script script/E2ETest.s.sol:E2ETestScript \
+  --rpc-url http://127.0.0.1:8545 \
+  --sender "$ETH_FROM" \
+  --private-key "$PRIVATE_KEY" \
+  --broadcast --legacy -vv
+```
+
+**Note:** The `--legacy` flag is required when running on forks to prevent transaction simulation failures.
+
 ## Project Structure
 
 ```
