@@ -133,6 +133,24 @@ contract VaultAccessAndSupplyTest is Test {
         assertEq(pool.variableDebt(T0, address(vault)), 0);
     }
 
+    function testBorrowUnknownTokenReverts() public {
+        vm.prank(hook);
+        vm.expectRevert("Unknown token");
+        vault.borrowFromAave(address(0xdead), 1);
+    }
+
+    function testRepayUnknownTokenReverts() public {
+        vm.prank(hook);
+        vm.expectRevert("Unknown token");
+        vault.repayToAave(address(0xdead), 1);
+    }
+
+    function testWithdrawUnknownTokenReverts() public {
+        vm.prank(hook);
+        vm.expectRevert("Unknown token");
+        vault.withdrawFromAave(address(0xdead), 1);
+    }
+
     function testBorrowAndRepayFullCycle() public {
         // Pre-supply collateral
         MockERC20(T0).mint(address(vault), 8 ether);
@@ -150,6 +168,15 @@ contract VaultAccessAndSupplyTest is Test {
         vm.prank(hook);
         vault.repayToAave(T0, 2 ether);
         assertEq(pool.variableDebt(T0, address(vault)), 1 ether);
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /*                                 Health factor                             */
+    /* -------------------------------------------------------------------------- */
+
+    function testHealthFactorReflectsPool() public {
+        pool.setHealthFactor(150e16); // 1.5
+        assertEq(vault.getHealthFactor(), 150e16);
     }
 }
 
