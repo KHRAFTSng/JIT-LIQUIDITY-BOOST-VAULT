@@ -63,6 +63,11 @@ contract E2ETestScript is Script {
         console.log("=== JIT Liquidity Boost Vault E2E Test ===");
         console.log("");
 
+        // Configure broadcaster (use PRIVATE_KEY from .env; ensure it has balance)
+        uint256 broadcasterKey = _getBroadcasterKey();
+        address broadcaster = vm.addr(broadcasterKey);
+        vm.deal(broadcaster, 1_000 ether);
+
         // Step 1: Deploy Hook
         console.log("Step 1: Deploying JitLiquidityHook...");
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
@@ -74,7 +79,7 @@ contract E2ETestScript is Script {
             constructorArgs
         );
 
-        vm.startBroadcast();
+        vm.startBroadcast(broadcasterKey);
         JitLiquidityHook hook = new JitLiquidityHook{salt: salt}(POOL_MANAGER);
         require(address(hook) == hookAddress, "Hook address mismatch");
         JitLiquidityVault vault = hook.vault();
@@ -89,7 +94,7 @@ contract E2ETestScript is Script {
         IERC20 weth = IERC20(WETH);
         IERC20 reth = IERC20(RETH);
 
-        vm.startBroadcast();
+        vm.startBroadcast(broadcasterKey);
         weth.approve(address(PERMIT2), type(uint256).max);
         reth.approve(address(PERMIT2), type(uint256).max);
         // Approve Permit2 for PositionManager with expiration
@@ -107,9 +112,9 @@ contract E2ETestScript is Script {
 
         // Step 3: Fund test account (on fork)
         console.log("Step 3: Funding test account...");
-        vm.deal(msg.sender, 1000 ether);
+        vm.deal(broadcaster, 1000 ether);
         // Wrap ETH to WETH
-        vm.startBroadcast();
+        vm.startBroadcast(broadcasterKey);
         (bool success,) = WETH.call{value: 100 ether}("");
         require(success, "WETH wrap failed");
         vm.stopBroadcast();
@@ -117,19 +122,19 @@ contract E2ETestScript is Script {
         // Acquire rETH by swapping WETH for rETH via Uniswap V3
         console.log("Acquiring rETH by swapping WETH...");
         uint256 rethNeeded = 50 ether;
-        uint256 currentReth = reth.balanceOf(msg.sender);
+        uint256 currentReth = reth.balanceOf(broadcaster);
         
         if (currentReth < rethNeeded) {
             // Use Uniswap V3 Router to swap WETH for rETH
             address uniswapV3Router = 0xE592427A0AEce92De3Edee1F18E0157C05861564; // Uniswap V3 Router
             
             // Approve router to spend WETH
-            vm.startBroadcast();
+            vm.startBroadcast(broadcasterKey);
             weth.approve(uniswapV3Router, type(uint256).max);
             
             // WETH/rETH pool fee tier (0.3% = 3000)
             uint24 fee = 3000;
-            uint256 amountIn = 50 ether; // Swap 50 WETH for rETH
+            uint256 amountIn = 20 ether; // Swap 20 WETH for rETH, keep WETH for deposit/liquidity
             
             // Encode swap path: WETH -> rETH
             bytes memory path = abi.encodePacked(WETH, fee, RETH);
@@ -138,7 +143,7 @@ contract E2ETestScript is Script {
             ISwapRouter(uniswapV3Router).exactInput(
                 ISwapRouter.ExactInputParams({
                     path: path,
-                    recipient: msg.sender,
+                    recipient: broadcaster,
                     deadline: block.timestamp + 3600,
                     amountIn: amountIn,
                     amountOutMinimum: 0 // Accept any amount out for testing
@@ -148,19 +153,19 @@ contract E2ETestScript is Script {
             
             console.log("Swapped", amountIn / 1e18, "WETH for rETH");
         }
-        
-        console.log("WETH balance:", weth.balanceOf(msg.sender) / 1e18, "ETH");
-        console.log("rETH balance:", reth.balanceOf(msg.sender) / 1e18, "ETH");
+
+        console.log("WETH balance:", weth.balanceOf(broadcaster) / 1e18, "ETH");
+        console.log("rETH balance:", reth.balanceOf(broadcaster) / 1e18, "ETH");
         console.log("");
 
         // Step 4: Deposit to vault (keep some WETH for liquidity)
         console.log("Step 4: Depositing to vault...");
-        uint256 availableWeth = weth.balanceOf(msg.sender);
-        uint256 wethForLiquidity = 2 ether; // Reserve 2 WETH for pool liquidity
+        uint256 availableWeth = weth.balanceOf(broadcaster);
+        uint256 wethForLiquidity = 5 ether; // Reserve 5 WETH for pool liquidity and swap gas
         uint256 depositAmount = availableWeth > wethForLiquidity ? availableWeth - wethForLiquidity : 0;
         
         if (depositAmount > 0) {
-            vm.startBroadcast();
+            vm.startBroadcast(broadcasterKey);
             vault.deposit(depositAmount, msg.sender);
             vm.stopBroadcast();
         }
@@ -188,10 +193,10 @@ contract E2ETestScript is Script {
         int24 tickUpper = TickMath.maxUsableTick(60);
 
         // Adjust amounts based on available tokens - need reasonable amounts for liquidity
-        uint256 availableRethForPool = reth.balanceOf(msg.sender);
-        uint256 amount0 = availableRethForPool > 1 ether ? 1 ether : availableRethForPool; // Use 1 rETH
-        uint256 availableWethForPool = weth.balanceOf(msg.sender);
-        uint256 amount1 = availableWethForPool > 1 ether ? 1 ether : availableWethForPool; // Use 1 WETH
+        uint256 availableRethForPool = reth.balanceOf(broadcaster);
+        uint256 amount0 = availableRethForPool > 1 ether ? 1 ether : availableRethForPool; // Use up to 1 rETH
+        uint256 availableWethForPool = weth.balanceOf(broadcaster);
+        uint256 amount1 = availableWethForPool > 2 ether ? 2 ether : availableWethForPool; // Use up to 2 WETH
         
         // Ensure we have minimum amounts for liquidity
         require(amount0 > 0 && amount1 > 0, "Insufficient tokens for liquidity");
@@ -204,7 +209,7 @@ contract E2ETestScript is Script {
             amount1
         );
 
-        vm.startBroadcast();
+        vm.startBroadcast(broadcasterKey);
         // Initialize pool (only takes poolKey and sqrtPrice)
         POSITION_MANAGER.initializePool(poolKey, sqrtPrice);
 
@@ -236,7 +241,7 @@ contract E2ETestScript is Script {
         // Step 7: Perform swap to trigger JIT liquidity
         console.log("Step 7: Performing swap to trigger JIT liquidity...");
         // Use smaller swap amount based on available tokens
-        uint256 availableRethForSwap = reth.balanceOf(msg.sender);
+        uint256 availableRethForSwap = reth.balanceOf(broadcaster);
         uint256 swapAmount = availableRethForSwap > 0.1 ether ? 0.1 ether : availableRethForSwap;
         
         if (swapAmount == 0) {
@@ -244,10 +249,10 @@ contract E2ETestScript is Script {
             return;
         }
         
-        uint256 wethBalanceBefore = weth.balanceOf(msg.sender);
+        uint256 wethBalanceBefore = weth.balanceOf(broadcaster);
         
         // Re-approve if needed
-        vm.startBroadcast();
+        vm.startBroadcast(broadcasterKey);
         reth.approve(address(SWAP_ROUTER), type(uint256).max);
         
         SWAP_ROUTER.swapExactTokensForTokens({
@@ -256,12 +261,13 @@ contract E2ETestScript is Script {
             zeroForOne: true, // rETH -> WETH
             poolKey: poolKey,
             hookData: Constants.ZERO_BYTES,
-            receiver: msg.sender,
+            receiver: broadcaster,
             deadline: block.timestamp + 3600
         });
         vm.stopBroadcast();
 
-        uint256 wethReceived = weth.balanceOf(msg.sender) - wethBalanceBefore;
+        uint256 wethAfter = weth.balanceOf(broadcaster);
+        uint256 wethReceived = wethAfter > wethBalanceBefore ? wethAfter - wethBalanceBefore : 0;
         console.log("Swap completed!");
         console.log("Swapped rETH:", swapAmount / 1e18);
         console.log("Received WETH:", wethReceived / 1e18);
@@ -297,6 +303,15 @@ contract E2ETestScript is Script {
             console.log("WARNING: Vault health factor is low!");
         }
         console.log("");
+    }
+
+    function _getBroadcasterKey() internal returns (uint256) {
+        // Try env PRIVATE_KEY, otherwise fallback to default anvil key
+        try vm.envUint("PRIVATE_KEY") returns (uint256 pk) {
+            return pk;
+        } catch {
+            return 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+        }
     }
 }
 
