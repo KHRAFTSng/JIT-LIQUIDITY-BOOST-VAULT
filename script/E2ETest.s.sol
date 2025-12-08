@@ -27,6 +27,8 @@ import {JitLiquidityVault} from "../src/JitLiquidityVault.sol";
  * @title E2ETestScript
  * @notice End-to-end test script for JIT Liquidity Boost Vault
  * @dev Tests the full flow: deploy hook, create pool, add liquidity, deposit to vault, swap
+ * @notice NOTE: This script uses Ethereum mainnet token addresses. For Unichain testing,
+ *         you need to fork Ethereum mainnet, not Unichain, or update token addresses.
  */
 contract E2ETestScript is Script {
     using CurrencyLibrary for Currency;
