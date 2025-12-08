@@ -193,15 +193,15 @@ contract E2ETestScript is Script {
         int24 tickUpper = TickMath.maxUsableTick(60);
 
         // Adjust amounts based on available tokens - need reasonable amounts for liquidity
-        // Reserve some rETH for swap test later (at least 0.5 rETH)
+        // Reserve some rETH for swap test later (at least 0.05 rETH)
         uint256 availableRethForPool = reth.balanceOf(broadcaster);
-        uint256 rethReservedForSwap = 0.5 ether;
+        uint256 rethReservedForSwap = 0.05 ether;
         uint256 amount0 = availableRethForPool > rethReservedForSwap ? availableRethForPool - rethReservedForSwap : 0; // Reserve rETH for swap
         uint256 availableWethForPool = weth.balanceOf(broadcaster);
         uint256 amount1 = availableWethForPool > 1 ether ? 1 ether : availableWethForPool; // Use 1 WETH
         
-        // Ensure we have minimum amounts for liquidity (need at least 0.1 rETH)
-        require(amount0 >= 0.1 ether && amount1 > 0, "Insufficient tokens for liquidity");
+        // Ensure we have minimum amounts for liquidity (need at least 0.01 rETH)
+        require(amount0 >= 0.01 ether && amount1 > 0, "Insufficient tokens for liquidity");
 
         uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
             sqrtPrice,
@@ -243,13 +243,15 @@ contract E2ETestScript is Script {
         // Step 7: Perform swap to trigger JIT liquidity
         console.log("Step 7: Performing swap to trigger JIT liquidity...");
         // Use a meaningful swap amount to trigger JIT liquidity
-        // NOTE: Very small swaps (< 0.5 ETH) may not trigger JIT liquidity because:
+        // NOTE: Very small swaps (< 0.05 ETH) may not trigger JIT liquidity because:
         // 1. The hook caps liquidity to the swap output amount (stepOut)
         // 2. The tight liquidity band (2 ticks) may not fit very small amounts
         // 3. The liquidity calculation may round down to 0 for tiny amounts
         uint256 availableRethForSwap = reth.balanceOf(broadcaster);
-        // Use at least 0.5 rETH for swap to trigger meaningful JIT liquidity
-        uint256 swapAmount = availableRethForSwap >= 0.5 ether ? 0.5 ether : availableRethForSwap;
+        // Target 0.1 rETH swap; proceed with at least 0.05 rETH if available
+        uint256 targetSwap = 0.1 ether;
+        uint256 minSwap = 0.05 ether;
+        uint256 swapAmount = availableRethForSwap >= targetSwap ? targetSwap : availableRethForSwap;
         
         if (swapAmount == 0) {
             console.log("Skipping swap - no rETH available (have:", availableRethForSwap / 1e18, "rETH)");
@@ -257,7 +259,7 @@ contract E2ETestScript is Script {
             return;
         }
         
-        if (swapAmount < 0.5 ether) {
+        if (swapAmount < minSwap) {
             console.log("WARNING: Swap amount is small (", swapAmount / 1e18, "rETH). JIT liquidity may not be added.");
         }
         
