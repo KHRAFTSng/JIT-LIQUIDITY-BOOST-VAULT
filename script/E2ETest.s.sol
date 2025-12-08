@@ -80,10 +80,13 @@ contract E2ETestScript is Script {
         vm.startBroadcast();
         weth.approve(address(PERMIT2), type(uint256).max);
         reth.approve(address(PERMIT2), type(uint256).max);
+        // Approve Permit2 for PositionManager with expiration
+        PERMIT2.approve(address(weth), address(POSITION_MANAGER), type(uint160).max, type(uint48).max);
+        PERMIT2.approve(address(reth), address(POSITION_MANAGER), type(uint160).max, type(uint48).max);
+        PERMIT2.approve(address(weth), address(POOL_MANAGER), type(uint160).max, type(uint48).max);
+        PERMIT2.approve(address(reth), address(POOL_MANAGER), type(uint160).max, type(uint48).max);
         weth.approve(address(SWAP_ROUTER), type(uint256).max);
         reth.approve(address(SWAP_ROUTER), type(uint256).max);
-        weth.approve(address(POSITION_MANAGER), type(uint256).max);
-        reth.approve(address(POSITION_MANAGER), type(uint256).max);
         weth.approve(address(vault), type(uint256).max);
         vm.stopBroadcast();
 
@@ -93,18 +96,25 @@ contract E2ETestScript is Script {
         // Step 3: Fund test account (on fork)
         console.log("Step 3: Funding test account...");
         vm.deal(msg.sender, 1000 ether);
-        // On fork, we'll use an account that should have tokens, or wrap ETH to WETH
-        // For now, let's wrap some ETH to WETH if needed
-        if (weth.balanceOf(msg.sender) < 100 ether) {
-            vm.startBroadcast();
-            // Wrap ETH to WETH - WETH has a deposit() function (no params)
-            (bool success,) = WETH.call{value: 100 ether}("");
-            require(success, "WETH wrap failed");
-            vm.stopBroadcast();
+        // Wrap ETH to WETH
+        vm.startBroadcast();
+        (bool success,) = WETH.call{value: 100 ether}("");
+        require(success, "WETH wrap failed");
+        vm.stopBroadcast();
+        
+        // For rETH on fork, get it from a known large holder
+        // Using Rocket Pool's rETH token contract which should have tokens
+        // Or we can use a known holder - try Rocket Pool staking contract
+        address rocketStorage = 0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46;
+        // Try to get rETH from a known large holder if available
+        // For this test, we'll just note if rETH balance is low
+        uint256 currentReth = reth.balanceOf(msg.sender);
+        if (currentReth < 50 ether) {
+            console.log("Note: Low rETH balance - may need to acquire rETH for full test");
         }
+        
         console.log("WETH balance:", weth.balanceOf(msg.sender) / 1e18, "ETH");
         console.log("rETH balance:", reth.balanceOf(msg.sender) / 1e18, "ETH");
-        console.log("Note: On fork, using existing token balances or wrapped ETH");
         console.log("");
 
         // Step 4: Deposit to vault
