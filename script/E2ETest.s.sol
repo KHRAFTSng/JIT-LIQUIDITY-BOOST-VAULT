@@ -83,6 +83,12 @@ contract E2ETestScript is Script {
 
         console.log("Hook deployed at:", address(hook));
         console.log("Vault deployed at:", address(vault));
+        console.log("Vault owner (should be hook):", vault.owner());
+        console.log("Hook leverage bps (static): 20000 (2x of vault reserves)");
+        console.log("Hook permissions: beforeSwap=true, afterSwap=true (others disabled)");
+        console.log("Supported tokens (hook/vault):");
+        console.log("  WETH:", WETH);
+        console.log("  rETH:", RETH);
         console.log("");
 
         // Step 2: Setup tokens and approvals
@@ -90,21 +96,7 @@ contract E2ETestScript is Script {
         IERC20 weth = IERC20(WETH);
         IERC20 reth = IERC20(RETH);
 
-        vm.startBroadcast(broadcasterKey);
-        weth.approve(address(PERMIT2), type(uint256).max);
-        reth.approve(address(PERMIT2), type(uint256).max);
-        // Approve Permit2 for PositionManager with expiration
-        PERMIT2.approve(address(weth), address(POSITION_MANAGER), type(uint160).max, type(uint48).max);
-        PERMIT2.approve(address(reth), address(POSITION_MANAGER), type(uint160).max, type(uint48).max);
-        PERMIT2.approve(address(weth), address(POOL_MANAGER), type(uint160).max, type(uint48).max);
-        PERMIT2.approve(address(reth), address(POOL_MANAGER), type(uint160).max, type(uint48).max);
-        weth.approve(address(SWAP_ROUTER), type(uint256).max);
-        reth.approve(address(SWAP_ROUTER), type(uint256).max);
-        weth.approve(address(vault), type(uint256).max);
-        vm.stopBroadcast();
-
-        console.log("Approvals set");
-        console.log("");
+        _setApprovals(broadcasterKey, weth, reth, vault);
 
         // Step 3: Fund test account (on fork)
         console.log("Step 3: Funding test account...");
@@ -115,205 +107,26 @@ contract E2ETestScript is Script {
         require(success, "WETH wrap failed");
         vm.stopBroadcast();
 
-        // Acquire rETH by swapping WETH for rETH via Uniswap V3
-        console.log("Acquiring rETH by swapping WETH...");
-        uint256 rethNeeded = 50 ether;
-        uint256 currentReth = reth.balanceOf(broadcaster);
+        _acquireReth(broadcasterKey, broadcaster, weth, reth);
 
-        if (currentReth < rethNeeded) {
-            // Use Uniswap V3 Router to swap WETH for rETH
-            address uniswapV3Router = 0xE592427A0AEce92De3Edee1F18E0157C05861564; // Uniswap V3 Router
+        uint256 depositAmount = _depositToVault(broadcasterKey, broadcaster, vault, weth);
 
-            // Approve router to spend WETH
-            vm.startBroadcast(broadcasterKey);
-            weth.approve(uniswapV3Router, type(uint256).max);
-
-            // WETH/rETH pool fee tier (0.3% = 3000)
-            uint24 fee = 3000;
-            uint256 amountIn = 50 ether; // Swap more WETH to get enough rETH for both liquidity and swap test
-
-            // Encode swap path: WETH -> rETH
-            bytes memory path = abi.encodePacked(WETH, fee, RETH);
-
-            // Perform exact input swap
-            ISwapRouter(uniswapV3Router)
-                .exactInput(
-                    ISwapRouter.ExactInputParams({
-                        path: path,
-                        recipient: broadcaster,
-                        deadline: block.timestamp + 3600,
-                        amountIn: amountIn,
-                        amountOutMinimum: 0 // Accept any amount out for testing
-                    })
-                );
-            vm.stopBroadcast();
-
-            console.log("Swapped", amountIn, "wei WETH for rETH");
-        }
-
-        console.log("WETH balance:", weth.balanceOf(broadcaster), "wei");
-        console.log("rETH balance:", reth.balanceOf(broadcaster), "wei");
-        console.log("");
-
-        // Step 4: Deposit to vault (keep some WETH for liquidity)
-        console.log("Step 4: Depositing to vault...");
-        uint256 availableWeth = weth.balanceOf(broadcaster);
-        uint256 wethForLiquidity = 5 ether; // Reserve 5 WETH for pool liquidity and swap gas
-        uint256 depositAmount = availableWeth > wethForLiquidity ? availableWeth - wethForLiquidity : 0;
-
-        if (depositAmount > 0) {
-            vm.startBroadcast(broadcasterKey);
-            vault.deposit(depositAmount, msg.sender);
-            vm.stopBroadcast();
-        }
-
-        console.log("Deposited", depositAmount, "wei WETH to vault");
-        console.log("Vault total assets:", vault.totalAssets(), "wei");
-        console.log("Vault total supply:", vault.totalSupply(), "shares (wei decimals)");
-        console.log("");
-
-        // Step 5: Create pool and add liquidity
-        console.log("Step 5: Creating pool and adding liquidity...");
-        Currency currency0 = Currency.wrap(RETH);
-        Currency currency1 = Currency.wrap(WETH);
-
-        PoolKey memory poolKey = PoolKey({
-            currency0: currency0, currency1: currency1, fee: 3000, tickSpacing: 60, hooks: IHooks(address(hook))
-        });
-
-        uint160 sqrtPrice = Constants.SQRT_PRICE_1_1; // 1:1 price
-        int24 tickLower = TickMath.minUsableTick(60);
-        int24 tickUpper = TickMath.maxUsableTick(60);
-
-        // Adjust amounts based on available tokens - need reasonable amounts for liquidity
-        // Reserve some rETH for swap test later (at least 0.005 rETH)
-        uint256 availableRethForPool = reth.balanceOf(broadcaster);
-        uint256 rethReservedForSwap = 0.005 ether;
-        uint256 amount0 = availableRethForPool > rethReservedForSwap ? availableRethForPool - rethReservedForSwap : 0; // Reserve rETH for swap
-        uint256 availableWethForPool = weth.balanceOf(broadcaster);
-        uint256 amount1 = availableWethForPool > 0.5 ether ? 0.5 ether : availableWethForPool; // Use 0.5 WETH
-
-        // Ensure we have minimum amounts for liquidity (need at least 0.001 rETH)
-        require(amount0 >= 0.001 ether && amount1 > 0, "Insufficient tokens for liquidity");
-
-        uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPrice, TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), amount0, amount1
-        );
-
-        vm.startBroadcast(broadcasterKey);
-        // Initialize pool (only takes poolKey and sqrtPrice)
-        POSITION_MANAGER.initializePool(poolKey, sqrtPrice);
-
-        // Add liquidity using modifyLiquidities
-        bytes memory actions = abi.encodePacked(
-            uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR), uint8(Actions.SWEEP), uint8(Actions.SWEEP)
-        );
-
-        bytes[] memory params = new bytes[](4);
-        params[0] = abi.encode(
-            poolKey, tickLower, tickUpper, liquidity, amount0 + 1, amount1 + 1, msg.sender, Constants.ZERO_BYTES
-        );
-        params[1] = abi.encode(currency0, currency1);
-        params[2] = abi.encode(currency0, msg.sender);
-        params[3] = abi.encode(currency1, msg.sender);
-
-        uint256 valueToPass = currency0.isAddressZero() ? amount0 + 1 : 0;
-        POSITION_MANAGER.modifyLiquidities{value: valueToPass}(abi.encode(actions, params), block.timestamp + 3600);
-        vm.stopBroadcast();
-
-        console.log("Pool initialized and liquidity added");
-        console.log("Liquidity amount (raw):", uint256(liquidity));
-        console.log("");
+        PoolKey memory poolKey =
+            _createPoolAndAddLiquidity(broadcasterKey, broadcaster, hook, weth, reth, depositAmount);
 
         // Step 6: Check vault reserves before swap
         _logVaultState(vault, "before swap");
 
         // Step 7: Perform swap to trigger JIT liquidity
         console.log("Step 7: Performing swap to trigger JIT liquidity...");
-        // Use a meaningful swap amount to trigger JIT liquidity
-        // NOTE: Very small swaps (< 0.01 ETH) may not trigger JIT liquidity because:
-        // 1. The hook caps liquidity to the swap output amount (stepOut)
-        // 2. The tight liquidity band (2 ticks) may not fit very small amounts
-        // 3. The liquidity calculation may round down to 0 for tiny amounts
-        uint256 availableRethForSwap = reth.balanceOf(broadcaster);
-        // Target 0.01 rETH swap; proceed with at least 0.005 rETH if available
-        uint256 targetSwap = 0.01 ether;
-        uint256 minSwap = 0.005 ether;
-        uint256 swapAmount = availableRethForSwap >= targetSwap ? targetSwap : availableRethForSwap;
-
-        if (swapAmount == 0) {
-            console.log("Skipping swap - no rETH available (have:", availableRethForSwap, "wei rETH)");
-            console.log("NOTE: Very small swaps may not trigger JIT liquidity due to tight liquidity bands");
-            return;
-        }
-
-        if (swapAmount < minSwap) {
-            console.log("WARNING: Swap amount is small (", swapAmount, "wei rETH). JIT liquidity may not be added.");
-        }
-
-        // Log vault state before swap for debugging
-        uint256 vaultWethBefore = vault.getReserves(WETH);
-        uint256 vaultRethBefore = vault.getReserves(RETH);
-
-        uint256 wethBalanceBefore = weth.balanceOf(broadcaster);
-        uint256 rethBalanceBefore = reth.balanceOf(broadcaster);
-
-        console.log("Swap details:");
-        console.log("  Available rETH:", availableRethForSwap, "wei");
-        console.log("  Swap amount:", swapAmount, "wei rETH");
-        console.log("  Vault WETH before:", vaultWethBefore, "wei");
-        console.log("  Vault rETH before:", vaultRethBefore, "wei");
-
-        // Re-approve if needed
-        vm.startBroadcast(broadcasterKey);
-        reth.approve(address(SWAP_ROUTER), type(uint256).max);
-
-        SWAP_ROUTER.swapExactTokensForTokens({
-            amountIn: swapAmount,
-            amountOutMin: 0,
-            zeroForOne: true, // rETH -> WETH
-            poolKey: poolKey,
-            hookData: Constants.ZERO_BYTES,
-            receiver: broadcaster,
-            deadline: block.timestamp + 3600
-        });
-        vm.stopBroadcast();
-
-        uint256 wethAfter = weth.balanceOf(broadcaster);
-        uint256 rethAfter = reth.balanceOf(broadcaster);
-        uint256 wethReceived = wethAfter > wethBalanceBefore ? wethAfter - wethBalanceBefore : 0;
-        uint256 rethSwapped = rethBalanceBefore > rethAfter ? rethBalanceBefore - rethAfter : 0;
-
-        // Check vault state after swap
-        uint256 vaultWethAfter = vault.getReserves(WETH);
-        uint256 vaultRethAfter = vault.getReserves(RETH);
-
-        console.log("Swap completed!");
-        console.log("  Swapped rETH:", rethSwapped, "wei");
-        console.log("  Received WETH:", wethReceived, "wei");
-
-        int256 wethChange = int256(vaultWethAfter) - int256(vaultWethBefore);
-        int256 rethChange = int256(vaultRethAfter) - int256(vaultRethBefore);
-
-        console.log("  Vault WETH after:", vaultWethAfter, "wei");
-        if (wethChange != 0) {
-            console.log(
-                "  Vault WETH change:",
-                uint256(wethChange > 0 ? wethChange : -wethChange),
-                "wei",
-                wethChange > 0 ? "increase" : "decrease"
-            );
-        }
-        console.log("  Vault rETH after:", vaultRethAfter, "wei");
-        if (rethChange != 0) {
-            console.log(
-                "  Vault rETH change:",
-                uint256(rethChange > 0 ? rethChange : -rethChange),
-                "wei",
-                rethChange > 0 ? "increase" : "decrease"
-            );
-        }
-        console.log("");
+        console.log("  Hook call trace (expected):");
+        console.log("    beforeSwap -> adds tight-range liquidity using vault reserves");
+        console.log("    if reserves short -> borrow from Aave (via vault) up to 2x leverage");
+        console.log("    afterSwap  -> remove liquidity, repay any borrow, re-supply leftovers");
+        console.log("  Notes:");
+        console.log("    - Very small swaps may be capped by stepOut/liquidity rounding");
+        console.log("    - All values logged in wei to see exact deltas");
+        _performSwapAndLog(broadcasterKey, broadcaster, poolKey, vault, weth, reth);
 
         // Step 8: Check vault state after swap
         _logVaultState(vault, "after swap");
@@ -344,6 +157,260 @@ contract E2ETestScript is Script {
         } else {
             console.log("WARNING: Vault health factor is low!");
         }
+        console.log("");
+    }
+
+    function _setApprovals(uint256 broadcasterKey, IERC20 weth, IERC20 reth, JitLiquidityVault vault) internal {
+        vm.startBroadcast(broadcasterKey);
+        weth.approve(address(PERMIT2), type(uint256).max);
+        reth.approve(address(PERMIT2), type(uint256).max);
+        PERMIT2.approve(address(weth), address(POSITION_MANAGER), type(uint160).max, type(uint48).max);
+        PERMIT2.approve(address(reth), address(POSITION_MANAGER), type(uint160).max, type(uint48).max);
+        PERMIT2.approve(address(weth), address(POOL_MANAGER), type(uint160).max, type(uint48).max);
+        PERMIT2.approve(address(reth), address(POOL_MANAGER), type(uint160).max, type(uint48).max);
+        weth.approve(address(SWAP_ROUTER), type(uint256).max);
+        reth.approve(address(SWAP_ROUTER), type(uint256).max);
+        weth.approve(address(vault), type(uint256).max);
+        vm.stopBroadcast();
+
+        console.log("Approvals set");
+        console.log("");
+    }
+
+    function _depositToVault(
+        uint256 broadcasterKey,
+        address broadcaster,
+        JitLiquidityVault vault,
+        IERC20 weth
+    ) internal returns (uint256 depositAmount) {
+        console.log("Step 4: Depositing to vault...");
+        uint256 availableWeth = weth.balanceOf(broadcaster);
+        uint256 wethForLiquidity = 5 ether; // Reserve 5 WETH for pool liquidity and swap gas
+        depositAmount = availableWeth > wethForLiquidity ? availableWeth - wethForLiquidity : 0;
+
+        if (depositAmount > 0) {
+            vm.startBroadcast(broadcasterKey);
+            vault.deposit(depositAmount, broadcaster);
+            vm.stopBroadcast();
+        }
+
+        console.log("Deposited", depositAmount, "wei WETH to vault");
+        console.log("Vault total assets:", vault.totalAssets(), "wei");
+        console.log("Vault total supply:", vault.totalSupply(), "shares (wei decimals)");
+        console.log("");
+    }
+
+    function _createPoolAndAddLiquidity(
+        uint256 broadcasterKey,
+        address broadcaster,
+        JitLiquidityHook hook,
+        IERC20 weth,
+        IERC20 reth,
+        uint256 /*depositAmount*/
+    ) internal returns (PoolKey memory poolKey) {
+        console.log("Step 5: Creating pool and adding liquidity...");
+        Currency currency0 = Currency.wrap(RETH);
+        Currency currency1 = Currency.wrap(WETH);
+
+        poolKey = PoolKey({
+            currency0: currency0, currency1: currency1, fee: 3000, tickSpacing: 60, hooks: IHooks(address(hook))
+        });
+
+        uint160 sqrtPrice = Constants.SQRT_PRICE_1_1; // 1:1 price
+        int24 tickLower = TickMath.minUsableTick(60);
+        int24 tickUpper = TickMath.maxUsableTick(60);
+
+        uint256 availableRethForPool = reth.balanceOf(broadcaster);
+        uint256 rethReservedForSwap = 0.005 ether;
+        uint256 amount0 = availableRethForPool > rethReservedForSwap ? availableRethForPool - rethReservedForSwap : 0;
+        uint256 availableWethForPool = weth.balanceOf(broadcaster);
+        uint256 amount1 = availableWethForPool > 0.5 ether ? 0.5 ether : availableWethForPool;
+
+        require(amount0 >= 0.001 ether && amount1 > 0, "Insufficient tokens for liquidity");
+
+        uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
+            sqrtPrice, TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), amount0, amount1
+        );
+
+        _mintPosition(
+            broadcasterKey,
+            MintParams({
+                poolKey: poolKey,
+                tickLower: tickLower,
+                tickUpper: tickUpper,
+                liquidity: liquidity,
+                amount0: amount0,
+                amount1: amount1,
+                currency0: currency0,
+                currency1: currency1,
+                recipient: broadcaster
+            })
+        );
+
+        console.log("Pool initialized and liquidity added");
+        console.log("Liquidity amount (raw):", uint256(liquidity));
+        console.log("");
+    }
+
+    struct MintParams {
+        PoolKey poolKey;
+        int24 tickLower;
+        int24 tickUpper;
+        uint128 liquidity;
+        uint256 amount0;
+        uint256 amount1;
+        Currency currency0;
+        Currency currency1;
+        address recipient;
+    }
+
+    function _mintPosition(uint256 broadcasterKey, MintParams memory m) internal {
+        vm.startBroadcast(broadcasterKey);
+        POSITION_MANAGER.initializePool(m.poolKey, Constants.SQRT_PRICE_1_1);
+
+        bytes memory actions = _actionsMint();
+        bytes[] memory params = _positionParams(m);
+
+        uint256 valueToPass = m.currency0.isAddressZero() ? m.amount0 + 1 : 0;
+        POSITION_MANAGER.modifyLiquidities{value: valueToPass}(abi.encode(actions, params), block.timestamp + 3600);
+        vm.stopBroadcast();
+    }
+
+    function _actionsMint() internal pure returns (bytes memory) {
+        return abi.encodePacked(
+            uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR), uint8(Actions.SWEEP), uint8(Actions.SWEEP)
+        );
+    }
+
+    function _positionParams(MintParams memory m) internal pure returns (bytes[] memory params) {
+        params = new bytes[](4);
+        params[0] =
+            abi.encode(m.poolKey, m.tickLower, m.tickUpper, m.liquidity, m.amount0 + 1, m.amount1 + 1, m.recipient, Constants.ZERO_BYTES);
+        params[1] = abi.encode(m.currency0, m.currency1);
+        params[2] = abi.encode(m.currency0, m.recipient);
+        params[3] = abi.encode(m.currency1, m.recipient);
+    }
+
+    function _performSwapAndLog(
+        uint256 broadcasterKey,
+        address broadcaster,
+        PoolKey memory poolKey,
+        JitLiquidityVault vault,
+        IERC20 weth,
+        IERC20 reth
+    ) internal {
+        uint256 availableRethForSwap = reth.balanceOf(broadcaster);
+        uint256 targetSwap = 0.01 ether;
+        uint256 minSwap = 0.005 ether;
+        uint256 swapAmount = availableRethForSwap >= targetSwap ? targetSwap : availableRethForSwap;
+
+        if (swapAmount == 0) {
+            console.log("Skipping swap - no rETH available (have:", availableRethForSwap, "wei rETH)");
+            console.log("NOTE: Very small swaps may not trigger JIT liquidity due to tight liquidity bands");
+            return;
+        }
+
+        if (swapAmount < minSwap) {
+            console.log("WARNING: Swap amount is small (", swapAmount, "wei rETH). JIT liquidity may not be added.");
+        }
+
+        uint256 vaultWethBefore = vault.getReserves(WETH);
+        uint256 vaultRethBefore = vault.getReserves(RETH);
+
+        uint256 wethBalanceBefore = weth.balanceOf(broadcaster);
+        uint256 rethBalanceBefore = reth.balanceOf(broadcaster);
+
+        console.log("Swap details:");
+        console.log("  Available rETH:", availableRethForSwap, "wei");
+        console.log("  Swap amount:", swapAmount, "wei rETH");
+        console.log("  Vault WETH before:", vaultWethBefore, "wei");
+        console.log("  Vault rETH before:", vaultRethBefore, "wei");
+
+        vm.startBroadcast(broadcasterKey);
+        reth.approve(address(SWAP_ROUTER), type(uint256).max);
+
+        SWAP_ROUTER.swapExactTokensForTokens({
+            amountIn: swapAmount,
+            amountOutMin: 0,
+            zeroForOne: true,
+            poolKey: poolKey,
+            hookData: Constants.ZERO_BYTES,
+            receiver: broadcaster,
+            deadline: block.timestamp + 3600
+        });
+        vm.stopBroadcast();
+
+        uint256 wethAfter = weth.balanceOf(broadcaster);
+        uint256 rethAfter = reth.balanceOf(broadcaster);
+        uint256 wethReceived = wethAfter > wethBalanceBefore ? wethAfter - wethBalanceBefore : 0;
+        uint256 rethSwapped = rethBalanceBefore > rethAfter ? rethBalanceBefore - rethAfter : 0;
+
+        uint256 vaultWethAfter = vault.getReserves(WETH);
+        uint256 vaultRethAfter = vault.getReserves(RETH);
+
+        console.log("Swap completed!");
+        console.log("  Swapped rETH:", rethSwapped, "wei");
+        console.log("  Received WETH:", wethReceived, "wei");
+        console.log("  Hook path executed:");
+        console.log("    beforeSwap: add liquidity (borrow if needed)");
+        console.log("    afterSwap:  pull liquidity, repay borrow, supply leftovers");
+
+        int256 wethChange = int256(vaultWethAfter) - int256(vaultWethBefore);
+        int256 rethChange = int256(vaultRethAfter) - int256(vaultRethBefore);
+
+        console.log("  Vault WETH after:", vaultWethAfter, "wei");
+        if (wethChange != 0) {
+            console.log(
+                "  Vault WETH change:",
+                uint256(wethChange > 0 ? wethChange : -wethChange),
+                "wei",
+                wethChange > 0 ? "increase" : "decrease"
+            );
+        }
+        console.log("  Vault rETH after:", vaultRethAfter, "wei");
+        if (rethChange != 0) {
+            console.log(
+                "  Vault rETH change:",
+                uint256(rethChange > 0 ? rethChange : -rethChange),
+                "wei",
+                rethChange > 0 ? "increase" : "decrease"
+            );
+        }
+        console.log("");
+    }
+
+    function _acquireReth(uint256 broadcasterKey, address broadcaster, IERC20 weth, IERC20 reth) internal {
+        console.log("Acquiring rETH by swapping WETH...");
+        uint256 rethNeeded = 50 ether;
+        uint256 currentReth = reth.balanceOf(broadcaster);
+
+        if (currentReth < rethNeeded) {
+            address uniswapV3Router = 0xE592427A0AEce92De3Edee1F18E0157C05861564; // Uniswap V3 Router
+
+            vm.startBroadcast(broadcasterKey);
+            weth.approve(uniswapV3Router, type(uint256).max);
+
+            uint24 fee = 3000;
+            uint256 amountIn = 50 ether; // target swap size
+            bytes memory path = abi.encodePacked(WETH, fee, RETH);
+
+            ISwapRouter(uniswapV3Router)
+                .exactInput(
+                    ISwapRouter.ExactInputParams({
+                        path: path,
+                        recipient: broadcaster,
+                        deadline: block.timestamp + 3600,
+                        amountIn: amountIn,
+                        amountOutMinimum: 0
+                    })
+                );
+            vm.stopBroadcast();
+
+            console.log("Swapped", amountIn, "wei WETH for rETH");
+        }
+
+        console.log("WETH balance:", weth.balanceOf(broadcaster), "wei");
+        console.log("rETH balance:", reth.balanceOf(broadcaster), "wei");
         console.log("");
     }
 
