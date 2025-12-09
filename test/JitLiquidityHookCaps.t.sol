@@ -237,6 +237,48 @@ contract JitLiquidityHookCapsTest is Test {
         assertEq(cap1, expected1);
     }
 
+    function testCalculateCapsExactOutZeroForOneClampsOutgoing() public {
+        PoolKey memory key = _makeKey(T2, T0);
+        PoolId id = key.toId();
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: int256(2 ether), sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
+        uint160 sqrtP = TickMath.getSqrtPriceAtTick(0);
+
+        uint128 liq = uint128(40 ether);
+        _mockLiquidity(id, liq);
+        _mockReserves(3 ether, 9 ether, T2, T0);
+
+        (uint256 cap0, uint256 cap1) = hook.exposeCalculateCaps(key, params, sqrtP);
+        (,, uint256 stepOut,) =
+            SwapMath.computeSwapStep(sqrtP, TickMath.MIN_SQRT_PRICE + 1, liq, params.amountSpecified, key.fee);
+
+        // zeroForOne exactOut clamps token1 (cap1) by stepOut; token0 fully leveraged
+        assertEq(cap0, (3 ether * hook.LEVERAGE_BPS()) / 10_000);
+        uint256 expected1 = (9 ether * hook.LEVERAGE_BPS()) / 10_000;
+        assertEq(cap1, stepOut < expected1 ? stepOut : expected1);
+    }
+
+    function testCalculateCapsSymmetricWhenReservesBalanced() public {
+        PoolKey memory key = _makeKey(T2, T0);
+        PoolId id = key.toId();
+        SwapParams memory params =
+            SwapParams({zeroForOne: false, amountSpecified: -int256(5 ether), sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
+        uint160 sqrtP = TickMath.getSqrtPriceAtTick(0);
+
+        uint128 liq = uint128(60 ether);
+        _mockLiquidity(id, liq);
+        _mockReserves(10 ether, 10 ether, T2, T0);
+
+        (uint256 cap0, uint256 cap1) = hook.exposeCalculateCaps(key, params, sqrtP);
+
+        uint256 expected = (10 ether * hook.LEVERAGE_BPS()) / 10_000;
+        (,, uint256 stepOut,) =
+            SwapMath.computeSwapStep(sqrtP, TickMath.MAX_SQRT_PRICE - 1, liq, params.amountSpecified, key.fee);
+        uint256 bounded = stepOut < expected ? stepOut : expected;
+        assertEq(cap0, bounded);
+        assertEq(cap1, expected);
+    }
+
     function testHookOwnerIsHookSelf() public {
         assertEq(hook.vault().owner(), address(hook));
     }
