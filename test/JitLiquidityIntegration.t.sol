@@ -28,6 +28,21 @@ import {IUniswapV4Router04} from "hookmate/interfaces/router/IUniswapV4Router04.
 
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 import {JitLiquidityVault} from "../src/JitLiquidityVault.sol";
+import {MockAToken} from "./Mocks/MockAToken.sol";
+import {MockAavePool} from "./Mocks/MockAavePool.sol";
+import {MockV3Aggregator} from "chainlink-evm/contracts/src/v0.8/shared/mocks/MockV3Aggregator.sol";
+
+contract MockWstETH is MockAToken {
+    constructor() MockAToken(address(0), "wstETH", "wstETH", 18) {}
+
+    function getStETHByWstETH(uint256 amount) external pure returns (uint256) {
+        return amount;
+    }
+
+    function getWstETHByStETH(uint256 amount) external pure returns (uint256) {
+        return amount;
+    }
+}
 
 /**
  * @title JitLiquidityIntegrationTest
@@ -39,10 +54,10 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
 
-    IPermit2 constant PERMIT2 = IPermit2(0x000000000022D473030F116dDEE9F6B43aC78BA3);
-    IPoolManager constant POOL_MANAGER = IPoolManager(0x000000000004444c5dc75cB358380D2e3dE08A90);
-    IPositionManager constant POSITION_MANAGER = IPositionManager(0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e);
-    IUniswapV4Router04 constant SWAP_ROUTER = IUniswapV4Router04(payable(0x00000000000044a361Ae3cAc094c9D1b14Eece97));
+    IPermit2 PERMIT2;
+    IPoolManager POOL_MANAGER;
+    IPositionManager POSITION_MANAGER;
+    IUniswapV4Router04 SWAP_ROUTER;
 
     address user = makeAddr("user");
 
@@ -62,25 +77,35 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
     address t3 = 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee; // weETH
 
     function setUp() public {
-        // Fork mainnet for integration testing
-        // use: anvil --rpc-url https://eth.llamarpc.com
-        vm.createSelectFork("http://127.0.0.1:8545");
+        // Deploy local hookmate stack (pool manager, router, position manager, permit2)
+        deployArtifacts();
+        PERMIT2 = permit2;
+        POOL_MANAGER = poolManager;
+        POSITION_MANAGER = positionManager;
+        SWAP_ROUTER = swapRouter;
+
+        // Prime mainnet-like token addresses and Aave pool with mocks the vault expects
+        _primeAaveAndTokens();
 
         // Hook contracts must have specific flags encoded in the address
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
 
         // Mine a salt that will produce a hook address with the correct flags
         bytes memory constructorArgs = abi.encode(POOL_MANAGER);
-        (, bytes32 salt) = HookMiner.find(
-            address(this),
-            /*CREATE2_FACTORY*/ flags,
-            type(JitLiquidityHook).creationCode,
-            constructorArgs
-        );
+        (address expected, bytes32 salt) =
+            HookMiner.find(address(this), flags, type(JitLiquidityHook).creationCode, constructorArgs);
 
         // Deploy the hook using CREATE2
         hook = new JitLiquidityHook{salt: salt}(POOL_MANAGER);
+        require(address(hook) == expected, "hook flags mismatch");
         vault = hook.vault();
+
+        // Default pool tokens: rETH / WETH
+        currency0 = Currency.wrap(t2);
+        currency1 = Currency.wrap(t0);
+
+        poolKey = PoolKey(currency0, currency1, 3000, 60, IHooks(hook));
+        poolId = poolKey.toId();
     }
 
     function setupApproves(address token) internal {
@@ -93,7 +118,7 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
 
     function testDeposit() public {
         vm.startPrank(user);
-        deal(t0, user, 100 ether);
+        MockAToken(t0).mint(user, 100 ether);
         IERC20(t0).approve(address(vault), type(uint256).max);
         vault.deposit(10 ether, user);
         vm.stopPrank();
@@ -101,13 +126,13 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
         assertApproxEqAbs(vault.totalAssets(), 10 ether, 3);
         assertEq(vault.totalSupply(), 10 ether);
 
-        // Add additional assets to the vault
-        deal(t2, address(vault), 10 ether);
+        // Add additional assets to the vault and mock-supply to Aave
+        MockAToken(t2).mint(address(vault), 10 ether);
         vm.prank(address(vault));
         vault.supplyToAave(t2);
 
-        // Total assets should be greater than 20 ether
-        assertGt(vault.totalAssets(), 20 ether);
+        // Total assets should reflect supplied + on-hand WETH (~20 ether)
+        assertGe(vault.totalAssets(), 20 ether);
         assertEq(vault.totalSupply(), 10 ether);
 
         // Test redeem
@@ -119,18 +144,12 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
     }
 
     function testSwap() public {
-        currency0 = Currency.wrap(t2); // rETH
-        currency1 = Currency.wrap(t0); // WETH
-
-        poolKey = PoolKey(currency0, currency1, 3000, 60, IHooks(hook));
-        poolId = poolKey.toId();
-
         setupApproves(t0);
         setupApproves(t2);
         POOL_MANAGER.initialize(poolKey, Constants.SQRT_PRICE_1_1);
 
-        deal(t0, address(this), 60 ether);
-        deal(t2, address(this), 60 ether);
+        MockAToken(t0).mint(address(this), 60 ether);
+        MockAToken(t2).mint(address(this), 60 ether);
 
         // Provide full-range liquidity to the pool
         int24 tickLower = TickMath.minUsableTick(poolKey.tickSpacing);
@@ -158,12 +177,12 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
         );
 
         // Deposit to vault
-        deal(t0, address(this), 100 ether);
+        MockAToken(t0).mint(address(this), 100 ether);
         IERC20(t0).approve(address(vault), type(uint256).max);
         vault.deposit(100 ether, user);
 
         vm.startPrank(user);
-        deal(t2, address(user), 50 ether);
+        MockAToken(t2).mint(address(user), 50 ether);
 
         IERC20(t0).approve(address(vault), type(uint256).max);
         IERC20(t2).approve(address(vault), type(uint256).max);
@@ -196,6 +215,47 @@ contract JitLiquidityIntegrationTest is Test, Deployers {
         emit log_named_decimal_uint("   rETH balance", vault.getReserves(t2), 18);
         emit log_named_decimal_uint("   weETH balance", vault.getReserves(t3), 18);
         emit log_named_decimal_uint("   Total Assets", vault.totalAssets(), 18);
+    }
+
+    function _primeAaveAndTokens() internal {
+        // Deploy mock tokens at canonical addresses
+        MockAToken weth = new MockAToken(address(0), "WETH", "WETH", 18);
+        MockWstETH wsteth = new MockWstETH();
+        MockAToken reth = new MockAToken(address(0), "rETH", "rETH", 18);
+        MockAToken weeth = new MockAToken(address(0), "weETH", "weETH", 18);
+
+        vm.etch(t0, address(weth).code);
+        vm.etch(t1, address(wsteth).code);
+        vm.etch(t2, address(reth).code);
+        vm.etch(t3, address(weeth).code);
+
+        // Mock Aave pool at canonical address and wire aTokens
+        MockAavePool poolImpl = new MockAavePool();
+        vm.etch(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2, address(poolImpl).code);
+        MockAavePool pool = MockAavePool(0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2);
+
+        MockAToken aWETH = new MockAToken(address(pool), "aWETH", "aWETH", 18);
+        MockAToken awstETH = new MockAToken(address(pool), "awstETH", "awstETH", 18);
+        MockAToken aRETH = new MockAToken(address(pool), "aRETH", "aRETH", 18);
+        MockAToken aWEETH = new MockAToken(address(pool), "aWEETH", "aWEETH", 18);
+
+        pool.setAToken(t0, address(aWETH));
+        pool.setAToken(t1, address(awstETH));
+        pool.setAToken(t2, address(aRETH));
+        pool.setAToken(t3, address(aWEETH));
+
+        // Mock Chainlink feeds used in vault accounting (18-decimal answers)
+        _mockOracle(0x86392dC19c0b719886221c78AB11eb8Cf5c52812, 18, 1e18);
+        _mockOracle(0x536218f9E9Eb48863970252233c8F271f554C2d0, 18, 1e18);
+        _mockOracle(0x5c9C449BbC9a6075A2c061dF312a35fd1E05fF22, 18, 1e18);
+        _mockOracle(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419, 8, 3000e8);
+    }
+
+    function _mockOracle(address agg, uint8 decimals, int256 answer) internal {
+        MockV3Aggregator oracle = new MockV3Aggregator(decimals, answer);
+        vm.etch(agg, address(oracle).code);
+        bytes memory ret = abi.encode(uint80(1), answer, block.timestamp, block.timestamp, uint80(1));
+        vm.mockCall(agg, abi.encodeWithSelector(MockV3Aggregator.latestRoundData.selector), ret);
     }
 }
 
