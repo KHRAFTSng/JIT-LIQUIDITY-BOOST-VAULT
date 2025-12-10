@@ -1,8 +1,8 @@
 # JIT Liquidity Boost Vault
 
-[![Tests](https://img.shields.io/badge/tests-foundry-blue)](#tests)
+[![Tests](https://img.shields.io/badge/tests-foundry-blue)](#tests--coverage)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
-[![Stack](https://img.shields.io/badge/stack-Uniswap_v4%20%7C%20Aave_v3%20%7C%20ERC4626-purple)](#architecture)
+[![Stack](https://img.shields.io/badge/stack-Uniswap_v4%20%7C%20Aave_v3%20%7C%20ERC4626-purple)](#architecture--components)
 
 ## Description
 JIT Liquidity Boost Vault combines Uniswap v4 hooks with an ERC4626 vault that supplies to Aave. The hook injects tight-range liquidity right before swaps on ETH-LST pairs (wstETH/ETH, rETH/ETH, weETH/ETH, WETH/ETH), then removes it immediately after, capturing fees while deposits earn Aave yield.
@@ -10,51 +10,77 @@ JIT Liquidity Boost Vault combines Uniswap v4 hooks with an ERC4626 vault that s
 ## Problem Statement
 LST/ETH pools often face shallow liquidity exactly when swaps arrive, causing price impact and missed fee revenue. LPs also sit idle between swaps, leaving capital underutilized.
 
-## Solution & Impact (incl. financial)
-- **JIT depth on demand:** The hook adds liquidity only when swaps occur, reducing slippage and boosting fee capture.
-- **Leverage with safety:** Up to 2x of vault reserves can be borrowed from Aave for temporary depth, then repaid post-swap.
-- **Continuous yield:** Idle assets stay supplied on Aave, so capital earns even between swaps.
-- **Financial impact:** More swap fees per unit of liquidity, lower slippage for traders, and improved capital efficiency for LPs. Vault APR is the combination of Aave supply yield plus periodic swap fee accrual from JIT events.
+## Solution & Financial Impact
+- **JIT depth on demand:** Liquidity only when swaps occur → lower slippage, better execution.
+- **Leverage with safety:** Borrow up to 2x vault reserves from Aave for temporary depth; repay post-swap.
+- **Continuous yield:** Idle assets stay on Aave; capital works between swaps.
+- **Financial impact:** Higher fee capture per unit of liquidity, improved capital efficiency for LPs, lower slippage for traders; vault APR = Aave supply yield + JIT swap fees.
 
-## Diagrams (flows)
-- **User/LP flow:** Deposit → vault supplies to Aave → swap triggers hook → hook adds liquidity → swap executes → hook removes liquidity → repay borrow → excess resupplied to Aave.
-- **Technical flow:** `beforeSwap` pulls/borrrows + mints position; `afterSwap` burns position, settles fees, repays, then re-supplies. See `JitLiquidityHook.sol` for caps and `JitLiquidityVault.sol` for accounting.
-
-## Architecture & Components
-- **JitLiquidityVault (`src/JitLiquidityVault.sol`)**: ERC4626 vault, Aave supply/borrow, Chainlink pricing, owns pool liquidity funds.
-- **JitLiquidityHook (`src/JitLiquidityHook.sol`)**: Uniswap v4 hook implementing `beforeSwap`/`afterSwap`, computes caps, manages JIT add/remove liquidity, owns the vault.
-- **Mocks & test utilities**: Under `test/Mocks` and `test/utils` for local/invariant/integration testing.
-- **Supported assets**: WETH, wstETH, rETH, weETH (mainnet addresses baked into vault/hook).
-
-## Installation & Setup
-```bash
-# Install Foundry (if needed)
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
-
-# Install dependencies
-forge install
-
-# Build
-forge build
+## Diagrams / Flows
+```mermaid
+flowchart LR
+  U[User deposit] --> V[Vault supplies to Aave]
+  S[Swap arrives] --> B{Hook beforeSwap}
+  B --> L[Add JIT liquidity (vault + optional borrow)]
+  L --> X[Swap executes]
+  X --> A{Hook afterSwap}
+  A --> R[Remove liquidity, collect fees]
+  R --> P[Repay borrow + resupply to Aave]
+  P --> V
 ```
 
-## Tests & Scripts
+```mermaid
+sequenceDiagram
+  participant Trader
+  participant Hook
+  participant Vault
+  participant Aave
+  Trader->>Hook: Swap hits pool
+  Hook->>Vault: Pull reserves / borrow caps
+  Hook->>Hook: Mint tight-range position
+  Trader->>Hook: Swap executes
+  Hook->>Hook: Burn position, settle fees
+  Hook->>Aave: Repay borrow
+  Hook->>Vault: Resupply leftovers to Aave
+```
+
+## Architecture & Components
+- **JitLiquidityVault (`src/JitLiquidityVault.sol`)**: ERC4626 vault; Aave supply/borrow; Chainlink pricing; owns pool funds.
+- **JitLiquidityHook (`src/JitLiquidityHook.sol`)**: Uniswap v4 hook implementing `beforeSwap`/`afterSwap`; caps JIT size; adds/removes liquidity; owns the vault.
+- **Mocks & test utils**: Under `test/Mocks` and `test/utils` for unit, integration, and invariant suites.
+- **Supported assets**: WETH, wstETH, rETH, weETH (mainnet addresses baked into vault/hook).
+
+## Tests & Coverage
+- **Total tests:** 69 (unit + integration + invariants).
+- **Coverage goal:** 100% on core suites (use `--ir-minimum --skip E2ETest` to avoid stack-depth issues in the E2E script).
 ```bash
-# Run all tests (69 total at time of writing)
 forge test
-
-# Verbose
 forge test -vvv
-
-# Coverage (target 100% on core suites; skip E2E to avoid stack depth)
 forge coverage --ir-minimum --skip E2ETest
-
-# Integration test (local hookmate stack, mocked)
 forge test --match-path 'test/JitLiquidityIntegration.t.sol'
 ```
 
-## End-to-End (fork) run
+## Installation & Setup
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+forge install
+forge build
+```
+
+## Run Tests & Scripts
+```bash
+# All tests
+forge test
+
+# Integration only
+forge test --match-path 'test/JitLiquidityIntegration.t.sol'
+
+# Coverage (core suites)
+forge coverage --ir-minimum --skip E2ETest
+```
+
+## End-to-End Demo (fork)
 ```bash
 source .env
 anvil --fork-url "$ETH_RPC_URL" --code-size-limit 40000
