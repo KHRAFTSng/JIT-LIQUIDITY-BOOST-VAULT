@@ -1,113 +1,64 @@
 # JIT Liquidity Boost Vault
 
-**A protocol that leverages Just-In-Time liquidity hooks on Uniswap v4 for 1:1 asset pairs (stETH/ETH, rETH/ETH, and weETH/ETH) with Aave yield generation.**
+[![Tests](https://img.shields.io/badge/tests-foundry-blue)](#tests)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
+[![Stack](https://img.shields.io/badge/stack-Uniswap_v4%20%7C%20Aave_v3%20%7C%20ERC4626-purple)](#architecture)
 
-## Overview
+## Description
+JIT Liquidity Boost Vault combines Uniswap v4 hooks with an ERC4626 vault that supplies to Aave. The hook injects tight-range liquidity right before swaps on ETH-LST pairs (wstETH/ETH, rETH/ETH, weETH/ETH, WETH/ETH), then removes it immediately after, capturing fees while deposits earn Aave yield.
 
-JIT Liquidity Boost Vault is a hybrid DeFi protocol combining Uniswap v4 hooks and Aave lending. The protocol provides Just-In-Time (JIT) liquidity using Uniswap v4 hooks for 1:1 asset pairs. Before a swap takes place, the protocol takes available liquidity from the vault and additionally borrows assets from Aave to amplify liquidity of the Uniswap v4 pool. The swap is then executed with this enhanced position, after which the liquidity is immediately removed and the Aave loan is repaid. Meanwhile, the vault deposits continue to generate passive yield on Aave.
+## Problem Statement
+LST/ETH pools often face shallow liquidity exactly when swaps arrive, causing price impact and missed fee revenue. LPs also sit idle between swaps, leaving capital underutilized.
 
-This mechanism allows users to capture swap fees and lending rewards while enabling highly efficient, temporary liquidity provision.
+## Solution & Impact (incl. financial)
+- **JIT depth on demand:** The hook adds liquidity only when swaps occur, reducing slippage and boosting fee capture.
+- **Leverage with safety:** Up to 2x of vault reserves can be borrowed from Aave for temporary depth, then repaid post-swap.
+- **Continuous yield:** Idle assets stay supplied on Aave, so capital earns even between swaps.
+- **Financial impact:** More swap fees per unit of liquidity, lower slippage for traders, and improved capital efficiency for LPs. Vault APR is the combination of Aave supply yield plus periodic swap fee accrual from JIT events.
 
-## Key Features
+## Diagrams (flows)
+- **User/LP flow:** Deposit → vault supplies to Aave → swap triggers hook → hook adds liquidity → swap executes → hook removes liquidity → repay borrow → excess resupplied to Aave.
+- **Technical flow:** `beforeSwap` pulls/borrrows + mints position; `afterSwap` burns position, settles fees, repays, then re-supplies. See `JitLiquidityHook.sol` for caps and `JitLiquidityVault.sol` for accounting.
 
-- **ERC4626 Compatible Vault**: Standard interface for deposits and withdrawals
-- **Just-In-Time Liquidity**: Adds liquidity just before swaps and removes it immediately after
-- **Aave Integration**: Supplies assets to Aave V3 for passive yield generation
-- **Multi-Asset Support**: Supports WETH, wstETH, rETH, and weETH
-- **Chainlink Oracles**: Uses Chainlink price feeds for accurate asset valuation
-- **Uniswap v4 Hooks**: Leverages Uniswap v4's hook system for seamless integration
+## Architecture & Components
+- **JitLiquidityVault (`src/JitLiquidityVault.sol`)**: ERC4626 vault, Aave supply/borrow, Chainlink pricing, owns pool liquidity funds.
+- **JitLiquidityHook (`src/JitLiquidityHook.sol`)**: Uniswap v4 hook implementing `beforeSwap`/`afterSwap`, computes caps, manages JIT add/remove liquidity, owns the vault.
+- **Mocks & test utilities**: Under `test/Mocks` and `test/utils` for local/invariant/integration testing.
+- **Supported assets**: WETH, wstETH, rETH, weETH (mainnet addresses baked into vault/hook).
 
-## Architecture
-
-### Core Components
-
-1. **JitLiquidityVault** (`src/JitLiquidityVault.sol`)
-   - ERC4626-compatible vault contract
-   - Manages deposits and withdrawals
-   - Supplies assets to Aave V3 for yield
-   - Uses Chainlink oracles for price normalization
-
-2. **JitLiquidityHook** (`src/JitLiquidityHook.sol`)
-   - Uniswap v4 hook contract
-   - Implements `beforeSwap` and `afterSwap` hooks
-   - Adds JIT liquidity before swaps
-   - Removes liquidity after swaps and returns to vault
-
-### Supported Assets
-
-- **WETH**: Wrapped Ethereum (0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2)
-- **wstETH**: Wrapped stETH from Lido (0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0)
-- **rETH**: Rocket Pool ETH (0xae78736Cd615f374D3085123A210448E74Fc6393)
-- **weETH**: Ether.fi Wrapped eETH (0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee)
-
-## How It Works
-
-1. **Deposit**: Users deposit WETH into the vault, which automatically supplies it to Aave V3
-2. **Swap Detection**: When a swap occurs on a supported Uniswap v4 pool, the hook detects it
-3. **JIT Liquidity Addition**: Before the swap executes, the hook:
-   - Calculates optimal liquidity amount based on swap size and vault reserves
-   - Adds liquidity to the pool using assets from the vault
-4. **Swap Execution**: The swap executes with enhanced liquidity depth
-5. **Liquidity Removal**: After the swap, the hook:
-   - Removes the JIT liquidity
-   - Takes earned swap fees
-   - Returns assets to the vault, which supplies them to Aave
-
-## Development
-
-### Prerequisites
-
-- [Foundry](https://getfoundry.sh/) (stable version)
-- Node.js and npm/yarn
-- Anvil (included with Foundry)
-
-### Setup
-
+## Installation & Setup
 ```bash
+# Install Foundry (if needed)
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+
 # Install dependencies
 forge install
 
-# Build contracts
+# Build
 forge build
+```
 
-# Run tests
+## Tests & Scripts
+```bash
+# Run all tests (69 total at time of writing)
 forge test
 
-# Run tests with verbosity
+# Verbose
 forge test -vvv
+
+# Coverage (target 100% on core suites; skip E2E to avoid stack depth)
+forge coverage --ir-minimum --skip E2ETest
+
+# Integration test (local hookmate stack, mocked)
+forge test --match-path 'test/JitLiquidityIntegration.t.sol'
 ```
 
-### Testing
-
-For integration testing, you'll need to run a local Anvil fork:
-
+## End-to-End (fork) run
 ```bash
-# Start Anvil with mainnet fork
-anvil --rpc-url https://eth.llamarpc.com
-
-# In another terminal, run tests
-forge test
-```
-
-### Deployment
-
-Deploy the hook to a network:
-
-```bash
-# Deploy hook
-forge script script/00_DeployHook.s.sol:DeployHookScript --rpc-url <RPC_URL> --broadcast --verify
-```
-
-### Running E2E Test on Fork
-
-To run the end-to-end test on an Ethereum mainnet fork:
-
-```bash
-# Start Anvil fork
 source .env
 anvil --fork-url "$ETH_RPC_URL" --code-size-limit 40000
 
-# In another terminal, run the E2E test
 export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 export ETH_FROM=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
 
@@ -118,69 +69,33 @@ forge script script/E2ETest.s.sol:E2ETestScript \
   --broadcast --legacy -vv
 ```
 
-Command (copy/paste) for the current E2E run with wei-based logging:
-
-```bash
-export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-export ETH_FROM=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
-
-forge script script/E2ETest.s.sol:E2ETestScript \
-  --rpc-url http://127.0.0.1:8545 \
-  --sender "$ETH_FROM" \
-  --private-key "$PRIVATE_KEY" \
-  --broadcast --legacy -vv
-```
-
-Example successful fork run (wei outputs):
+**Recent fork example (wei):**
 - Hook: `0xc39Baf2bB37D56b72E86ca7d7f6305Bb2A77C0C0`, Vault: `0x2Ae7d00D548c76c0078130C36881b8930B355A26`
-- Swap: 10,000,000,000,000,000 wei rETH → received 9,943,657,362,539,014 wei WETH
-- Vault after swap: WETH `49,501,321,095,158,524,861` wei (≈8.62e15 wei decrease), rETH `8,671,419,267,218,658` wei
-- Total assets after swap: `49,511,291,884,175,848,13` wei; health factor remains very high
-
-**Note:** The `--legacy` flag is required when running on forks to prevent transaction simulation failures.
+- Swap: 10,000,000,000,000,000 rETH → 9,943,657,362,539,014 WETH
+- Post-swap vault: WETH `49,501,321,095,158,524,861` wei, rETH `8,671,419,267,218,658` wei, HF high.
 
 ## Project Structure
-
 ```
 .
-├── src/
-│   ├── interfaces/
-│   │   └── IAaveV3Pool.sol      # Aave V3 Pool interface
-│   ├── JitLiquidityHook.sol     # Uniswap v4 hook implementation
-│   └── JitLiquidityVault.sol    # ERC4626 vault contract
-├── test/
-│   ├── Mocks/
-│   │   ├── ChainlinkFeedMock.sol
-│   │   ├── MockAavePool.sol
-│   │   ├── MockAToken.sol
-│   │   ├── MockRETH.sol
-│   │   ├── MockWeETH.sol
-│   │   └── MockWstETH.sol
-│   ├── utils/
-│   │   ├── Deployers.sol
-│   │   └── libraries/
-│   │       └── EasyPosm.sol
-│   ├── JitLiquidityIntegration.t.sol
-│   ├── VaultBorrow.t.sol
-│   ├── VaultAccessAndSupply.t.sol
-│   └── VaultRedemptions.t.sol
-├── script/
-│   ├── base/
-│   │   ├── BaseScript.sol
-│   │   └── LiquidityHelpers.sol
-│   └── 00_DeployHook.s.sol
-└── lib/                          # Dependencies
+├── src/                     # Hook + vault
+├── test/                    # Unit, integration, invariants, mocks
+├── script/                  # Deploy & E2E scripts
+└── lib/                     # Dependencies
 ```
 
-## Security Considerations
+## Roadmap
+- Expand supported pools beyond ETH-LST pairs.
+- Add configurable leverage caps per pool.
+- Formal verification and external audit.
+- Strategy toggles for fee reinvest vs. distribution.
 
-- **Access Control**: Vault owner can withdraw from Aave (hook is set as owner)
-- **Oracle Reliance**: Price feeds are critical for asset valuation
-- **Smart Contract Risks**: This code has not been audited
-- **Economic Risks**: Market conditions can affect JIT liquidity profitability
+## Security Considerations
+- Access: hook is vault owner; Aave interactions gated by owner.
+- Oracles: Chainlink feeds are relied upon for accounting; mock in tests.
+- Economic: JIT profitability depends on fee tiers vs. gas/borrow costs.
+- Audits: Not yet audited—use in production at your own risk.
 
 ## License
-
 MIT
 
 
